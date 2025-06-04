@@ -1,0 +1,116 @@
+
+
+from nautobot.extras.jobs import Job
+from nautobot.tenancy.models import Tenant
+from nautobot.utilities.utils import get_all_concrete_models
+
+
+class FindTenantObjects(Job):
+    """
+    Find all objects assigned to a specific tenant.
+    """
+    tenant = Tenant.objects.all()
+
+    class Meta:
+        name = "Find Objects by Tenant"
+        description = "Locate all objects assigned to a particular tenant"
+
+    def run(self, data, commit):
+        tenant = data['tenant']
+        self.log_info(f"Searching for objects assigned to tenant: {tenant.name}")
+
+        # Get all models that have a tenant field
+        models_with_tenant = []
+        for model in get_all_concrete_models():
+            if hasattr(model, 'tenant'):
+                models_with_tenant.append(model)
+
+        # Search each model for objects assigned to this tenant
+        results = {}
+        for model in models_with_tenant:
+            model_name = model._meta.verbose_name_plural.title()
+            objects = model.objects.filter(tenant=tenant)
+            count = objects.count()
+            
+            if count > 0:
+                self.log_success(f"Found {count} {model_name} assigned to {tenant.name}")
+                results[model_name] = list(objects.values_list('id', flat=True))
+            else:
+                self.log_info(f"No {model_name} found for {tenant.name}")
+
+        # Prepare output
+        output = f"## Results for Tenant: {tenant.name}\n\n"
+        for model_name, ids in results.items():
+            output += f"- **{model_name}**: {len(ids)} objects (IDs: {', '.join(str(id) for id in ids)})\n"
+
+        return output
+
+=========
+
+from nautobot.extras.jobs import Job, BooleanVar
+from nautobot.tenancy.models import Tenant
+from nautobot.utilities.utils import get_all_concrete_models
+
+
+class ManageTenantAssignments(Job):
+    """
+    Find all objects assigned to a specific tenant and optionally unassign them.
+    """
+    tenant = Tenant.objects.all()
+    unassign = BooleanVar(
+        description="Check this box to unassign the tenant from all found objects",
+        default=False
+    )
+
+    class Meta:
+        name = "Manage Tenant Assignments"
+        description = "Find and optionally unassign objects from a tenant"
+
+    def run(self, data, commit):
+        tenant = data['tenant']
+        unassign = data['unassign']
+        action = "Unassigning" if unassign else "Finding"
+        self.log_info(f"{action} objects assigned to tenant: {tenant.name}")
+
+        # Get all models that have a tenant field
+        models_with_tenant = []
+        for model in get_all_concrete_models():
+            if hasattr(model, 'tenant'):
+                models_with_tenant.append(model)
+
+        # Search each model for objects assigned to this tenant
+        results = {}
+        for model in models_with_tenant:
+            model_name = model._meta.verbose_name_plural.title()
+            objects = model.objects.filter(tenant=tenant)
+            count = objects.count()
+            
+            if count > 0:
+                self.log_success(f"Found {count} {model_name} assigned to {tenant.name}")
+                results[model_name] = {
+                    'count': count,
+                    'objects': objects,
+                    'ids': list(objects.values_list('id', flat=True))
+                }
+
+                if unassign and commit:
+                    updated = objects.update(tenant=None)
+                    self.log_success(f"Unassigned tenant from {updated} {model_name}")
+            else:
+                self.log_info(f"No {model_name} found for {tenant.name}")
+
+        # Prepare output
+        output = f"## Results for Tenant: {tenant.name}\n\n"
+        output += f"**Action:** {'Unassigned tenant from' if unassign and commit else 'Found'} objects\n\n"
+        
+        for model_name, data in results.items():
+            action_text = "Unassigned" if unassign and commit else "Found"
+            output += (
+                f"- **{model_name}**: {action_text} {data['count']} objects "
+                f"(IDs: {', '.join(str(id) for id in data['ids'])})\n"
+            )
+
+        if unassign and not commit:
+            output += "\n**Dry-run**: No changes were committed. Check the box above to make changes."
+
+        return output
